@@ -487,7 +487,7 @@ class WanSelfAttention(nn.Module):
         v = (self.v(x) + self.v_loras(x)).view(b, s, n, d)
         return q, k, v
 
-    def forward(self, q, k, v, seq_lens, lynx_ref_feature=None, lynx_ref_scale=1.0, attention_mode_override=None):
+    def forward(self, q, k, v, seq_lens, lynx_ref_feature=None, lynx_ref_scale=1.0, attention_mode_override=None, window_size=None):
         r"""
         Args:
             x(Tensor): Shape [B, L, num_heads, C / num_heads]
@@ -502,7 +502,7 @@ class WanSelfAttention(nn.Module):
         if self.ref_adapter is not None and lynx_ref_feature is not None:
             ref_x = self.ref_adapter(self, q, lynx_ref_feature)
 
-        x = attention(q, k, v, k_lens=seq_lens, attention_mode=attention_mode)
+        x = attention(q, k, v, k_lens=seq_lens, attention_mode=attention_mode, window_size=window_size if window_size is not None else (-1, -1))
 
         if self.ref_adapter is not None and lynx_ref_feature is not None:
             x = x.add(ref_x, alpha=lynx_ref_scale)
@@ -1473,6 +1473,7 @@ class FreeLongPlusPlusWanAttentionBlock(WanAttentionBlock):
         x_ovi=None, e_ovi=None, freqs_ovi=None, context_ovi=None, seq_lens_ovi=None, grid_sizes_ovi=None,
         num_cond_latents=None,
     ):
+        from comfy import model_management as mm
         logging.info("[FreeLong++] Attention block is active.")
         # Fallback to parent for complex modes we don't yet specialize
         if any([
@@ -1542,46 +1543,29 @@ class FreeLongPlusPlusWanAttentionBlock(WanAttentionBlock):
             q = rope_apply(q, grid_sizes, freqs, reverse_time=reverse_time)
             k = rope_apply(k, grid_sizes, freqs, reverse_time=reverse_time)
 
-        # Multi-window attention over temporal chunks
-        tokens_per_frame = N // T
+        # Multi-window attention via window_size (token-based)
+        tokens_per_frame = max(1, N // max(1, T))
         features_from_branches = []
         for alpha in self.alphas:
             if alpha == "global":
-                y_branch = self.self_attn.forward(q, k, v, seq_lens)
-                features_from_branches.append(y_branch)
-                continue
-            # local window size in frames (full window length)
-            half = max(0, int(self.native_length * alpha) // 2)
-            window_len = min(T, max(1, 2 * half + 1))
-            if window_len >= T:
-                y_branch = self.self_attn.forward(q, k, v, seq_lens)
-                features_from_branches.append(y_branch)
-                continue
-            outputs = []
-            for start_f in range(0, T, window_len):
-                end_f = min(T, start_f + window_len)
-                start_idx = start_f * tokens_per_frame
-                end_idx = end_f * tokens_per_frame
-                q_s = q[:, start_idx:end_idx]
-                k_s = k[:, start_idx:end_idx]
-                v_s = v[:, start_idx:end_idx]
-                y_s = self.self_attn.forward(q_s, k_s, v_s, seq_lens)
-                outputs.append(y_s)
-            y_branch = torch.cat(outputs, dim=1)
-            # pad if needed
-            if y_branch.shape[1] != N:
-                pad = N - y_branch.shape[1]
-                y_branch = torch.cat([y_branch, torch.zeros(B, pad, C, device=y_branch.device, dtype=y_branch.dtype)], dim=1)
+                window_arg = (-1, -1)
+            else:
+                half_frames = max(0, int(self.native_length * alpha) // 2)
+                half_tokens = half_frames * tokens_per_frame
+                window_arg = (half_tokens, half_tokens)
+            y_branch = self.self_attn.forward(q, k, v, seq_lens, window_size=window_arg)
             features_from_branches.append(y_branch)
 
         # Spectral fusion
         combined_feat = self.multi_band_spectral_fusion(features_from_branches, grid_sizes)
 
-        # Residual add (mirrors parent)
-        if not is_longcat:
-            x = x.addcmul(combined_feat, gate_msa)
-        else:
-            x = x + (combined_feat.view(B, -1, N//T, C).float() * gate_msa).to(input_dtype).view(B, -1, C)
+        # Residual add (mirrors parent) with device-agnostic autocast
+        autocast_device_type = mm.get_autocast_device(x.device)
+        with torch.amp.autocast(autocast_device_type, dtype=torch.float32):
+            if not is_longcat:
+                x = x.addcmul(combined_feat, gate_msa)
+            else:
+                x = x + (combined_feat.view(B, -1, N//T, C).float() * gate_msa).to(input_dtype).view(B, -1, C)
 
         # cross-attention & ffn (standard parent path)
         if context is not None:
@@ -1591,9 +1575,10 @@ class FreeLongPlusPlusWanAttentionBlock(WanAttentionBlock):
                                     adapter_proj=adapter_proj, ip_scale=ip_scale, orig_seq_len=original_seq_len, lynx_x_ip=lynx_x_ip, lynx_ip_scale=lynx_ip_scale, num_cond_latents=num_cond_latents)
             x = x.to(input_dtype)
 
-        # FFN
-        y = self.ffn(torch.addcmul(shift_mlp, self.norm2(x), 1 + scale_mlp))
-        x = x.addcmul(y, gate_mlp)
+        # FFN with device-agnostic autocast
+        with torch.amp.autocast(autocast_device_type, dtype=torch.float32):
+            y = self.ffn(torch.addcmul(shift_mlp, self.norm2(x), 1 + scale_mlp))
+            x = x.addcmul(y, gate_mlp)
 
         return x, None, lynx_ref_feature, None
 
