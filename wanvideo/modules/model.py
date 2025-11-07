@@ -1865,6 +1865,8 @@ class WanModel(torch.nn.Module):
                 is_ovi_audio_model=False,
                 # LongCat
                 is_longcat=False,
+                # FreeLong++
+                freelong_cfg=None,
                 ):
         r"""
         Initialize the diffusion model backbone.
