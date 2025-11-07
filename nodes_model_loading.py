@@ -1019,6 +1019,7 @@ class WanVideoModelLoader:
                 "multitalk_model": ("MULTITALKMODEL", {"default": None, "tooltip": "Multitalk model"}),
                 "fantasyportrait_model": ("FANTASYPORTRAITMODEL", {"default": None, "tooltip": "FantasyPortrait model"}),
                 "rms_norm_function": (["default", "pytorch"], {"default": "default", "tooltip": "RMSNorm function to use, 'pytorch' is the new native torch RMSNorm, which is faster (when not using torch.compile mostly) but changes results slightly. 'default' is the original WanRMSNorm"}),
+                "freelong_args": ("FREELONG_ARGS", ),
             }
         }
 
@@ -1029,7 +1030,7 @@ class WanVideoModelLoader:
 
     def loadmodel(self, model, base_precision, load_device,  quantization,
                   compile_args=None, attention_mode="sdpa", block_swap_args=None, lora=None, vram_management_args=None, extra_model=None, vace_model=None,
-                  fantasytalking_model=None, multitalk_model=None, fantasyportrait_model=None, rms_norm_function="default"):
+                  fantasytalking_model=None, multitalk_model=None, fantasyportrait_model=None, rms_norm_function="default", freelong_args=None):
         assert not (vram_management_args is not None and block_swap_args is not None), "Can't use both block_swap_args and vram_management_args at the same time"
         if vace_model is not None:
             extra_model = vace_model
@@ -1349,6 +1350,7 @@ class WanVideoModelLoader:
             "lynx_ip_layers": lynx_ip_layers,
             "lynx_ref_layers": lynx_ref_layers,
             "is_longcat": dim == 4096,
+            "freelong_cfg": freelong_args,
 
         }
 

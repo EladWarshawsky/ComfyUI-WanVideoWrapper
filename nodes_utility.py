@@ -687,3 +687,45 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "WanVideoPassImagesFromSamples": "WanVideo Pass Images From Samples",
     "FaceMaskFromPoseKeypoints": "Face Mask From Pose Keypoints",
 }
+
+# FreeLong++ settings node
+class WanVideoFreeLongArgs:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "enabled": ("BOOLEAN", {"default": False}),
+                "frame_length_extension": (["2x (up to ~160 frames)", "4x (up to ~320 frames)", "8x (up to ~650 frames)"],),
+                "native_length": ("INT", {"default": 81, "min": 16, "max": 256, "step": 1, "tooltip": "The native training length of the model (default is 81 for Wan2.1)"}),
+            }
+        }
+
+    RETURN_TYPES = ("FREELONG_ARGS",)
+    FUNCTION = "get_args"
+    CATEGORY = "WanVideoWrapper/Experimental"
+
+    def get_args(self, enabled, frame_length_extension, native_length):
+        if not enabled:
+            return (None,)
+
+        if "8x" in frame_length_extension:
+            alphas = [1, 2, 4, "global"]
+        elif "4x" in frame_length_extension:
+            alphas = [1, 2, "global"]
+        else:  # 2x
+            alphas = [1, "global"]
+
+        freelong_cfg = {
+            "alphas": alphas,
+            "native_length": native_length,
+        }
+
+        return (freelong_cfg,)
+
+# Register node
+NODE_CLASS_MAPPINGS.update({
+    "WanVideoFreeLongArgs": WanVideoFreeLongArgs,
+})
+NODE_DISPLAY_NAME_MAPPINGS.update({
+    "WanVideoFreeLongArgs": "WanVideo FreeLong++ Args",
+})
