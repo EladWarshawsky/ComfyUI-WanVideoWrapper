@@ -1246,7 +1246,7 @@ class WanAttentionBlock(nn.Module):
             if not is_longcat:
                 x = x.addcmul(y, gate_msa)
             else:
-                x = x + (y.view(B, -1, N//T, C).float() * gate_msa).to(input_dtype).view(B, -1, C)
+                x = x + (y.view(B, -1, N//T, C) * gate_msa).to(input_dtype).view(B, -1, C)
         del y, gate_msa
 
         # cross-attention & ffn function
@@ -1313,7 +1313,9 @@ class WanAttentionBlock(nn.Module):
                 if not is_longcat:
                     mod_x = torch.addcmul(shift_mlp, self.norm2(x.to(shift_mlp.dtype)), 1 + scale_mlp)
                 else:
-                    mod_x = torch.addcmul(shift_mlp, self.norm2(x.view(B, -1, N//T, C).float()), 1 + scale_mlp).view(B, -1, C)
+                    norm2_in = x.view(B, -1, N//T, C)
+                    norm2_out = self.norm2(norm2_in.to(self.norm2.weight.dtype))
+                    mod_x = torch.addcmul(shift_mlp, norm2_out, 1 + scale_mlp).view(B, -1, C)
                 x_ffn = self.ffn(mod_x.to(input_dtype))
             del shift_mlp, scale_mlp
         
@@ -1328,7 +1330,7 @@ class WanAttentionBlock(nn.Module):
             if not is_longcat:
                 x = x.addcmul(x_ffn.to(gate_mlp.dtype), gate_mlp).to(input_dtype)
             else:
-                x = x + (gate_mlp * x_ffn.view(B, -1, N//T, C).float()).to(input_dtype).view(B, -1, C)
+                x = x + (gate_mlp * x_ffn.view(B, -1, N//T, C)).to(input_dtype).view(B, -1, C)
         del gate_mlp
 
         if x_ip is not None: #stand-in
@@ -1575,13 +1577,11 @@ class FreeLongPlusPlusWanAttentionBlock(WanAttentionBlock):
         # Spectral fusion
         combined_feat = self.multi_band_spectral_fusion(features_from_branches, grid_sizes)
 
-        # Residual add (mirrors parent) with device-agnostic autocast
-        autocast_device_type = mm.get_autocast_device(x.device)
-        with torch.amp.autocast(autocast_device_type, dtype=torch.float32):
-            if not is_longcat:
-                x = x.addcmul(combined_feat, gate_msa)
-            else:
-                x = x + (combined_feat.view(B, -1, N//T, C).float() * gate_msa).to(input_dtype).view(B, -1, C)
+        # Residual add (no forced float32 casting)
+        if not is_longcat:
+            x = x.addcmul(combined_feat, gate_msa)
+        else:
+            x = x + (combined_feat.view(B, -1, N//T, C) * gate_msa).to(input_dtype).view(B, -1, C)
 
         # cross-attention & ffn (standard parent path)
         if context is not None:
@@ -1591,10 +1591,9 @@ class FreeLongPlusPlusWanAttentionBlock(WanAttentionBlock):
                                     adapter_proj=adapter_proj, ip_scale=ip_scale, orig_seq_len=original_seq_len, lynx_x_ip=lynx_x_ip, lynx_ip_scale=lynx_ip_scale, num_cond_latents=num_cond_latents)
             x = x.to(input_dtype)
 
-        # FFN with device-agnostic autocast
-        with torch.amp.autocast(autocast_device_type, dtype=torch.float32):
-            y = self.ffn(torch.addcmul(shift_mlp, self.norm2(x), 1 + scale_mlp))
-            x = x.addcmul(y, gate_mlp)
+        # FFN (no forced float32 casting)
+        y = self.ffn(torch.addcmul(shift_mlp, self.norm2(x), 1 + scale_mlp))
+        x = x.addcmul(y, gate_mlp)
 
         return x, None, lynx_ref_feature, None
 
