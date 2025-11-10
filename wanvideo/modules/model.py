@@ -466,25 +466,41 @@ class WanSelfAttention(nn.Module):
 
     def qkv_fn(self, x):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
-        q = self.norm_q(self.q(x).to(self.norm_q.weight.dtype)).to(x.dtype).view(b, s, n, d)
-        k = self.norm_k(self.k(x).to(self.norm_k.weight.dtype)).to(x.dtype).view(b, s, n, d)
-        v = self.v(x).view(b, s, n, d)
+        # Ensure inputs to Linear match weight dtype to avoid matmul dtype mismatch
+        x_q = x.to(self.q.weight.dtype)
+        x_k = x.to(self.k.weight.dtype)
+        x_v = x.to(self.v.weight.dtype)
+        q = self.norm_q(self.q(x_q).to(self.norm_q.weight.dtype)).to(x.dtype).view(b, s, n, d)
+        k = self.norm_k(self.k(x_k).to(self.norm_k.weight.dtype)).to(x.dtype).view(b, s, n, d)
+        v = self.v(x_v).to(x.dtype).view(b, s, n, d)
         return q, k, v
     
     def qkv_fn_longcat(self, x):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
-        q = self.q(x).view(b, s, n, d)
+        # Cast to layer dtypes before Linear
+        x_q = x.to(self.q.weight.dtype)
+        x_k = x.to(self.k.weight.dtype)
+        x_v = x.to(self.v.weight.dtype)
+        q = self.q(x_q).view(b, s, n, d)
         q = self.norm_q(q.float()).to(x.dtype)
-        k = self.k(x).view(b, s, n, d)
+        k = self.k(x_k).view(b, s, n, d)
         k = self.norm_k(k.float()).to(x.dtype)
-        v = self.v(x).view(b, s, n, d)
+        v = self.v(x_v).to(x.dtype).view(b, s, n, d)
         return q, k, v
     
     def qkv_fn_ip(self, x):
         b, s, n, d = *x.shape[:2], self.num_heads, self.head_dim
-        q = self.norm_q(self.q(x) + self.q_loras(x).to(self.norm_q.weight.dtype)).to(x.dtype).view(b, s, n, d)
-        k = self.norm_k(self.k(x) + self.k_loras(x).to(self.norm_k.weight.dtype)).to(x.dtype).view(b, s, n, d)
-        v = (self.v(x) + self.v_loras(x)).view(b, s, n, d)
+        # Cast to respective layer dtypes before Linear/Lora projections
+        x_q = x.to(self.q.weight.dtype)
+        x_k = x.to(self.k.weight.dtype)
+        x_v = x.to(self.v.weight.dtype)
+        q_proj = self.q(x_q)
+        q_lora = self.q_loras(x_q)
+        q = self.norm_q((q_proj + q_lora).to(self.norm_q.weight.dtype)).to(x.dtype).view(b, s, n, d)
+        k_proj = self.k(x_k)
+        k_lora = self.k_loras(x_k)
+        k = self.norm_k((k_proj + k_lora).to(self.norm_k.weight.dtype)).to(x.dtype).view(b, s, n, d)
+        v = (self.v(x_v) + self.v_loras(x_v)).to(x.dtype).view(b, s, n, d)
         return q, k, v
 
     def forward(self, q, k, v, seq_lens, lynx_ref_feature=None, lynx_ref_scale=1.0, attention_mode_override=None, window_size=None):
